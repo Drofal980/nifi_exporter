@@ -1,6 +1,7 @@
-FROM golang:1.14-alpine AS builder
+FROM harbor.corp.icr-team.com/dockerhub/golang:1.24.2 AS builder
 WORKDIR /go/src/github.com/msiedlarek/nifi_exporter
 COPY . .
+RUN go mod vendor
 RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /go/bin/nifi_exporter
 
 FROM scratch

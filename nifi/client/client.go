@@ -1,27 +1,35 @@
 package client
 
 import (
+	"crypto"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/asn1"
+
+	"gitlab.corp.icr-team.com/cognos/manacrypt/v2/environment"
 
 	"github.com/juju/errors"
 	log "github.com/sirupsen/logrus"
+
+	"golang.org/x/crypto/pkcs12"
 )
 
-const tokenExpirationMargin = time.Minute
+const (
+	tokenExpirationMargin = time.Minute
+	KEY_STORE_PASS        = "KEY_STORE_PASS"
+	CERT_ERROR_MESSAGE    = "Unable to retrieve certificates for https authentication: error %s"
+	ENV_ERROR_MESSAGE     = "Unable to retrieve nifi service %s from environment: error %s"
+)
 
 type Credentials struct {
 	Username string
@@ -48,7 +56,28 @@ type jwtPayload struct {
 	Subject           string `json:"sub"`
 }
 
-func NewClient(baseURL, username, password, caCertificates string) (*Client, error) {
+// func list_directory(dirPath string) {
+
+// 	entries, err := os.ReadDir(dirPath)
+// 	if err != nil {
+// 		fmt.Println("Error reading directory:", err)
+// 		return
+// 	}
+
+// 	fmt.Println("Files:")
+// 	for _, file := range entries {
+// 		fmt.Println(file.Name(), file.IsDir())
+// 	}
+
+// 	fmt.Println("Directories:")
+// 	for _, entry := range entries {
+// 		if entry.IsDir() {
+// 			fmt.Println(entry.Name())
+// 		}
+// 	}
+// }
+
+func NewClient(baseURL, username, password, certPath string) (*Client, error) {
 	c := Client{
 		baseURL: strings.TrimRight(baseURL, "/") + "/nifi-api",
 		credentials: url.Values{
@@ -56,29 +85,53 @@ func NewClient(baseURL, username, password, caCertificates string) (*Client, err
 			"password": []string{password},
 		},
 	}
-	if caCertificates != "" {
-		certPool := x509.NewCertPool()
-		if ok := certPool.AppendCertsFromPEM([]byte(caCertificates)); !ok {
-			return nil, errors.New("Invalid CA certificates.")
+
+	if certPath != "" {
+		// Read the certificate file
+		data, err := os.ReadFile(certPath)
+		if err != nil {
+			message := fmt.Sprintf("failed to read CA certificate file: error %s", err)
+			log.Error(message)
+			return nil, err
 		}
-		for _, der := range certPool.Subjects() {
-			var rdn pkix.RDNSequence
-			if _, err := asn1.Unmarshal(der, &rdn); err != nil {
-				return nil, errors.Trace(err)
-			}
-			var name pkix.Name
-			name.FillFromRDNSequence(&rdn)
-			log.WithFields(log.Fields{
-				"commonName":   name.CommonName,
-				"organization": name.Organization,
-			}).Infof("Loaded CA certificate for %s: %s", baseURL, name.CommonName)
+
+		keyStorePass, err := environment.GetRequiredEnv(KEY_STORE_PASS)
+		if err != nil {
+			message := fmt.Sprintf("Unable to retrieve nifi service %s from environment: error %s", KEY_STORE_PASS, err)
+			log.Error(message)
 		}
+
+		// Decode PKCS#12 file and validate errors immediately
+		key, cert, err := pkcs12.Decode(data, keyStorePass)
+		if err != nil {
+			message := fmt.Sprintf("failed to parse PKCS#12 certificate %s", err)
+			log.Error(message)
+			return nil, err // Exit early on error
+		}
+		privateKey, ok := key.(crypto.PrivateKey)
+		if !ok {
+			message := "key is not a private key"
+			log.Warn(message)
+			return nil, errors.New(message) // Return an error instead of proceeding
+		}
+		// Create TLS Certificate structure safely
+		clientTLSCert := tls.Certificate{
+			Certificate: [][]byte{cert.Raw}, // Ensure cert.Raw exists
+			PrivateKey:  privateKey,
+			Leaf:        cert, // Only valid if cert is non-nil
+		}
+
+		// Configure TLS with the client's certificate
 		c.client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{
-				RootCAs: certPool,
+				InsecureSkipVerify: true,
+				Certificates:       []tls.Certificate{clientTLSCert},
 			},
 		}
+
+		log.Infof("Loaded client certificate from %s", certPath)
 	}
+
 	return &c, nil
 }
 

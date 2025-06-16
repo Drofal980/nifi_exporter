@@ -8,11 +8,12 @@ import (
 	"reflect"
 	"strings"
 
+	"nifi_exporter/nifi/client"
+	"nifi_exporter/nifi/collectors"
+
 	"github.com/go-playground/locales/en"
-	"github.com/go-playground/universal-translator"
+	ut "github.com/go-playground/universal-translator"
 	"github.com/juju/errors"
-	"github.com/msiedlarek/nifi_exporter/nifi/client"
-	"github.com/msiedlarek/nifi_exporter/nifi/collectors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -26,11 +27,11 @@ type Configuration struct {
 		ListenAddress string `yaml:"listenAddress" validate:"required"`
 	} `yaml:"exporter" validate:"required"`
 	Nodes []struct {
-		URL            string            `yaml:"url" validate:"required,url"`
-		CACertificates string            `yaml:"caCertificates"`
-		Username       string            `yaml:"username" validate:"required"`
-		Password       string            `yaml:"password" validate:"required"`
-		Labels         map[string]string `yaml:"labels"`
+		URL      string            `yaml:"url" validate:"required,url"`
+		CertPath string            `yaml:"CertPath"`
+		Username string            `yaml:"username" validate:"required"`
+		Password string            `yaml:"password" validate:"required"`
+		Labels   map[string]string `yaml:"labels"`
 	} `yaml:"nodes" validate:"required,dive"`
 }
 
@@ -99,7 +100,7 @@ func loadConfig(configPath string) (*Configuration, error) {
 func start(config *Configuration) error {
 	for i := range config.Nodes {
 		node := &config.Nodes[i]
-		api, err := client.NewClient(node.URL, node.Username, node.Password, node.CACertificates)
+		api, err := client.NewClient(node.URL, node.Username, node.Password, node.CertPath)
 		if err != nil {
 			return errors.Annotate(err, "Couldn't create Prometheus API client")
 		}
